@@ -3,9 +3,9 @@ from typing import Optional
 
 class FactRequest(BaseModel):
     fact: str
-    provider: str = "groq"
-    api_key: str
-    model: Optional[str] = None
+    # provider: str = "groq"
+    # api_key: str
+    # model: Optional[str] = None
 
 class AgentResult(BaseModel):
     agent_id: str
@@ -22,3 +22,5 @@ class PipelineResponse(BaseModel):
     agents: list[AgentResult]
     total_distortion: float
     final_vs_original_score: float
+    story_type: str
+    propagation_reasoning: str

@@ -3,8 +3,96 @@ import re
 import httpx
 from models import AgentResult, PipelineResponse
 
-AGENTS = [
-    {
+# ---------------------------------------------------------------------------
+# GUARDRAILS
+# ---------------------------------------------------------------------------
+
+GUARDRAIL_PROMPT = """You are a content safety filter for an educational misinformation simulator.
+
+Your job is to decide if the given input is safe to process.
+
+REJECT if the input:
+- Targets a real, named living person to fabricate quotes or scandals about them
+- Is designed to create defamatory content about a specific individual
+- Contains hate speech, slurs, or content targeting a group based on race, religion, gender, or sexuality
+- Asks to simulate misinformation about a real ongoing crisis in a way that could cause real harm (e.g. active disaster, medical emergency)
+- Is sexually explicit or involves minors
+- Is designed to incite violence or radicalize
+
+ALLOW if the input:
+- Is a generic news-style fact (health, science, politics, economics, sports, food, etc.)
+- References real events or studies in a general, non-targeted way
+- Is clearly hypothetical or fictional
+- Names public figures only in the context of their public roles (e.g. a policy decision, not fabricated personal scandal)
+
+Return ONLY a JSON object:
+{
+  "safe": true or false,
+  "reason": "one sentence explanation if rejected, empty string if safe"
+}"""
+
+
+FACT_QUALITY_PROMPT = """You are a fact quality checker for an educational misinformation simulator.
+
+The user has submitted text to run through a media distortion pipeline.
+Your job is to check if it is suitable — meaning it resembles a real fact, claim, study finding, or news event.
+
+REJECT if the input:
+- Is already sensationalized or written like a tabloid headline (it should START as a neutral fact)
+- Is pure gibberish or random text
+- Is too vague to distort meaningfully (e.g. "things happen")
+- Is a single word or very short with no factual content
+
+ALLOW if the input:
+- Is a neutral, specific factual claim
+- Describes a study, survey, statistic, or event
+- Has enough detail to be meaningfully rewritten
+
+Return ONLY a JSON object:
+{
+  "suitable": true or false,
+  "reason": "one sentence explanation if rejected, empty string if suitable"
+}"""
+
+
+async def run_guardrails(fact: str, provider: str, api_key: str, model: str) -> None:
+    """Raises ValueError with a user-facing message if the input fails any check."""
+
+    # 1. Length check (cheap, no AI needed)
+    if len(fact.strip()) < 20:
+        raise ValueError("Please enter a more detailed fact or claim — it's too short to distort meaningfully.")
+    if len(fact.strip()) > 2000:
+        raise ValueError("Input is too long. Please keep it under 2000 characters.")
+
+    # 2. Safety check
+    safety_result = await call_ai(fact, GUARDRAIL_PROMPT, provider, api_key, model)
+    safety_cleaned = re.sub(r"```(?:json)?|```", "", safety_result).strip()
+    try:
+        safety = json.loads(safety_cleaned)
+        if not safety.get("safe", True):
+            reason = safety.get("reason", "Content policy violation.")
+            raise ValueError(f"Content not allowed: {reason}")
+    except json.JSONDecodeError:
+        pass  # If parsing fails, allow through — don't block on a guardrail error
+
+    # 3. Fact quality check
+    quality_result = await call_ai(fact, FACT_QUALITY_PROMPT, provider, api_key, model)
+    quality_cleaned = re.sub(r"```(?:json)?|```", "", quality_result).strip()
+    try:
+        quality = json.loads(quality_cleaned)
+        if not quality.get("suitable", True):
+            reason = quality.get("reason", "Input doesn't look like a fact.")
+            raise ValueError(f"Input not suitable: {reason}")
+    except json.JSONDecodeError:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# AGENTS
+# ---------------------------------------------------------------------------
+
+AGENTS = {
+    "wire_service": {
         "id": "wire_service",
         "name": "Wire Service",
         "emoji": "📡",
@@ -17,7 +105,7 @@ You always:
 - Turn hedged findings into definitive statements
 Rewrite the given text as a wire service brief. Be factual but lose the nuance."""
     },
-    {
+    "tabloid_blog": {
         "id": "tabloid_blog",
         "name": "Tabloid Blog",
         "emoji": "📰",
@@ -31,7 +119,7 @@ You always:
 - Add a clickbait angle
 Rewrite the given text as a tabloid blog post (2-3 sentences + a headline)."""
     },
-    {
+    "social_influencer": {
         "id": "social_influencer",
         "name": "Social Media Influencer",
         "emoji": "📱",
@@ -46,7 +134,7 @@ You always:
 - Add hashtags
 Rewrite the given text as a social media post."""
     },
-    {
+    "podcast_host": {
         "id": "podcast_host",
         "name": "Podcast Host",
         "emoji": "🎙️",
@@ -60,7 +148,7 @@ You always:
 - Use phrases like "think about it", "it all makes sense now", "follow the money"
 Rewrite the given text as a 3-4 sentence podcast talking point."""
     },
-    {
+    "news_anchor": {
         "id": "news_anchor",
         "name": "TV News Anchor",
         "emoji": "📺",
@@ -74,7 +162,7 @@ You always:
 - End with a scary question to keep viewers watching
 Rewrite the given text as a TV news broadcast snippet."""
     },
-    {
+    "random_commenter": {
         "id": "random_commenter",
         "name": "Random Internet User",
         "emoji": "💬",
@@ -87,30 +175,86 @@ You always:
 - Use casual, slightly aggressive language
 - Drop all numbers and replace with vague claims ("tons of people", "they proved that")
 Rewrite the given text as a casual social media comment or forum post (2-3 sentences)."""
+    },
+    "government_official": {
+        "id": "government_official",
+        "name": "Government Official",
+        "emoji": "🏛️",
+        "role_description": "Spins findings to fit policy agenda, uses bureaucratic language",
+        "system_prompt": """You are a government spokesperson commenting on a news story.
+You always:
+- Reframe findings to support existing policy positions
+- Use vague bureaucratic language to water down specifics
+- Add reassuring but meaningless phrases ("we are monitoring the situation")
+- Deflect responsibility or credit depending on the narrative
+- Speak in third person or passive voice to avoid accountability
+Rewrite the given text as an official government statement or press briefing quote."""
+    },
+    "academic_commenter": {
+        "id": "academic_commenter",
+        "name": "Academic on Twitter",
+        "emoji": "🎓",
+        "role_description": "Overcomplicates with jargon, smuggles in personal theory",
+        "system_prompt": """You are an academic who comments on news stories related to your field on social media.
+You always:
+- Use technical jargon to sound authoritative
+- Subtly reframe the finding to support your own pet theory
+- Add a thread-style breakdown that introduces tangential ideas
+- Correct one minor detail loudly while missing the bigger distortion
+- End with a plug for your own research
+Rewrite the given text as an academic Twitter/X thread opener (2-3 tweets)."""
     }
-]
+}
 
+SUPER_AGENT_PROMPT = """You are the Editor-in-Chief of the internet — a meta-agent who understands exactly how information spreads in the real world.
+
+Given a fact or news story, your job is to decide the most REALISTIC propagation path it would take through the media ecosystem.
+
+Available agents (you must pick between 4 and 6):
+- wire_service: for breaking factual stories that get picked up by press
+- tabloid_blog: for stories with health, crime, celebrity, or fear angles
+- social_influencer: for lifestyle, health, food, wellness, or relatable topics
+- podcast_host: for political, conspiracy-adjacent, or "hidden truth" stories
+- news_anchor: for stories that have mainstream TV appeal
+- random_commenter: almost always appears at the end of any chain
+- government_official: for policy, health guidelines, economic, or safety stories
+- academic_commenter: for science, research, statistics, or education stories
+
+Rules:
+- Think about what TYPE of story this is (health/science/political/social/crime/etc.)
+- Choose the agents that would REALISTICALLY pick it up in order
+- wire_service almost always goes first if it's a factual/research finding
+- random_commenter almost always goes last
+- Don't always use all agents — a niche academic story might skip tabloid_blog
+
+Return ONLY a JSON object:
+{
+  "agents": ["agent_id", ...],
+  "reasoning": "one sentence explanation",
+  "story_type": "2-3 word label"
+}"""
+
+
+# ---------------------------------------------------------------------------
+# AI CALLERS
+# ---------------------------------------------------------------------------
 
 async def call_groq(text: str, system_prompt: str, api_key: str, model: str) -> str:
     url = "https://api.groq.com/openai/v1/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json"
-    }
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     payload = {
         "model": model or "llama-3.3-70b-versatile",
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": text}
         ],
-        "temperature": 0.8,
+        "temperature": 0.7,
         "max_tokens": 400
     }
     async with httpx.AsyncClient(timeout=30.0) as client:
         response = await client.post(url, headers=headers, json=payload)
         response.raise_for_status()
-        data = response.json()
-        return data["choices"][0]["message"]["content"]
+        return response.json()["choices"][0]["message"]["content"]
 
 
 async def call_claude(text: str, system_prompt: str, api_key: str, model: str) -> str:
@@ -124,37 +268,30 @@ async def call_claude(text: str, system_prompt: str, api_key: str, model: str) -
         "model": model or "claude-haiku-4-5-20251001",
         "max_tokens": 400,
         "system": system_prompt,
-        "messages": [
-            {"role": "user", "content": text}
-        ]
+        "messages": [{"role": "user", "content": text}]
     }
     async with httpx.AsyncClient(timeout=30.0) as client:
         response = await client.post(url, headers=headers, json=payload)
         response.raise_for_status()
-        data = response.json()
-        return data["content"][0]["text"]
+        return response.json()["content"][0]["text"]
 
 
 async def call_openai(text: str, system_prompt: str, api_key: str, model: str) -> str:
     url = "https://api.openai.com/v1/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json"
-    }
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     payload = {
         "model": model or "gpt-4o-mini",
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": text}
         ],
-        "temperature": 0.8,
+        "temperature": 0.7,
         "max_tokens": 400
     }
     async with httpx.AsyncClient(timeout=30.0) as client:
         response = await client.post(url, headers=headers, json=payload)
         response.raise_for_status()
-        data = response.json()
-        return data["choices"][0]["message"]["content"]
+        return response.json()["choices"][0]["message"]["content"]
 
 
 async def call_ai(text: str, system_prompt: str, provider: str, api_key: str, model: str) -> str:
@@ -168,6 +305,27 @@ async def call_ai(text: str, system_prompt: str, provider: str, api_key: str, mo
         raise ValueError(f"Unknown provider: {provider}")
 
 
+# ---------------------------------------------------------------------------
+# PIPELINE
+# ---------------------------------------------------------------------------
+
+async def run_super_agent(fact: str, provider: str, api_key: str, model: str) -> dict:
+    result = await call_ai(fact, SUPER_AGENT_PROMPT, provider, api_key, model)
+    cleaned = re.sub(r"```(?:json)?|```", "", result).strip()
+    parsed = json.loads(cleaned)
+
+    valid_ids = set(AGENTS.keys())
+    agent_ids = [a for a in parsed.get("agents", []) if a in valid_ids]
+    if len(agent_ids) < 3:
+        agent_ids = ["wire_service", "tabloid_blog", "social_influencer", "podcast_host", "random_commenter"]
+
+    return {
+        "agents": agent_ids,
+        "reasoning": parsed.get("reasoning", "Standard propagation path selected."),
+        "story_type": parsed.get("story_type", "general news")
+    }
+
+
 async def score_distortion(original: str, rewritten: str, provider: str, api_key: str, model: str) -> dict:
     scoring_prompt = """You are an objective fact-checker. Compare the original fact with the rewritten version.
 Return ONLY a JSON object with:
@@ -177,10 +335,8 @@ Return ONLY a JSON object with:
 Return ONLY the JSON, no explanation."""
 
     user_msg = f"ORIGINAL: {original}\n\nREWRITTEN: {rewritten}"
-
     try:
         result = await call_ai(user_msg, scoring_prompt, provider, api_key, model)
-        # Strip markdown code fences if present
         cleaned = re.sub(r"```(?:json)?|```", "", result).strip()
         parsed = json.loads(cleaned)
         return {
@@ -192,10 +348,19 @@ Return ONLY the JSON, no explanation."""
 
 
 async def run_pipeline(fact: str, provider: str, api_key: str, model: str = None) -> PipelineResponse:
+    # Step 0: Guardrails
+    await run_guardrails(fact, provider, api_key, model)
+
+    # Step 1: Super agent decides order
+    super_decision = await run_super_agent(fact, provider, api_key, model)
+    ordered_agent_ids = super_decision["agents"]
+
+    # Step 2: Run agents sequentially
     agents_results = []
     current_text = fact
 
-    for agent in AGENTS:
+    for agent_id in ordered_agent_ids:
+        agent = AGENTS[agent_id]
         rewritten = await call_ai(current_text, agent["system_prompt"], provider, api_key, model)
         scoring = await score_distortion(fact, rewritten, provider, api_key, model)
 
@@ -219,5 +384,7 @@ async def run_pipeline(fact: str, provider: str, api_key: str, model: str = None
         original_fact=fact,
         agents=agents_results,
         total_distortion=round(total_distortion, 1),
-        final_vs_original_score=final_scoring["score"]
+        final_vs_original_score=final_scoring["score"],
+        story_type=super_decision["story_type"],
+        propagation_reasoning=super_decision["reasoning"]
     )
