@@ -1,13 +1,13 @@
+import os
+
+from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from starlette.middleware.trustedhost import TrustedHostMiddleware
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 from agents import run_pipeline
 from models import PipelineResponse
-from dotenv import load_dotenv
-import os
 
 load_dotenv()
 IS_PROD = os.getenv("ENV") == "production"
