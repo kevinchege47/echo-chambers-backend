@@ -1,17 +1,32 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from starlette.middleware.trustedhost import TrustedHostMiddleware
+from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
+
 from agents import run_pipeline
 from models import PipelineResponse
 from dotenv import load_dotenv
 import os
 
 load_dotenv()
-app = FastAPI(title="Misinformation Pipeline API", version="1.0.0")
+IS_PROD = os.getenv("ENV") == "production"
+app = FastAPI(
+    docs_url=None if IS_PROD else "/docs",
+    redoc_url=None if IS_PROD else "/redoc",
+    openapi_url=None if IS_PROD else "/openapi.json"
+)
+# Trust Nginx forwarded headers
+app.add_middleware(ProxyHeadersMiddleware)
 
+# CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:4200"],
+    allow_origins=[
+        "https://yourdomain.com",
+        "https://www.yourdomain.com",
+        "http://localhost:4200"   # local development only
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
