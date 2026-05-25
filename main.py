@@ -16,16 +16,12 @@ app = FastAPI(
     redoc_url=None if IS_PROD else "/redoc",
     openapi_url=None if IS_PROD else "/openapi.json"
 )
-# Trust Nginx forwarded headers
-app.add_middleware(ProxyHeadersMiddleware)
-
 # CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "https://yourdomain.com",
-        "https://www.yourdomain.com",
-        "http://localhost:4200"   # local development only
+        "https://echo-chambers.adjust.co.ke",
+        "https://www.echo-chambers.adjust.co.ke",
     ],
     allow_credentials=True,
     allow_methods=["*"],
