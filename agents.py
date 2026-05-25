@@ -206,33 +206,38 @@ Rewrite the given text as an academic Twitter/X thread opener (2-3 tweets)."""
     }
 }
 
-SUPER_AGENT_PROMPT = """You are the Editor-in-Chief of the internet — a meta-agent who understands exactly how information spreads in the real world.
+SUPER_AGENT_PROMPT = """
+You are the Editor-in-Chief of the internet — a meta-agent that understands how information spreads.
 
-Given a fact or news story, your job is to decide the most REALISTIC propagation path it would take through the media ecosystem.
+Your job is to determine the most realistic propagation path for the given story.
 
-Available agents (you must pick between 4 and 6):
-- wire_service: for breaking factual stories that get picked up by press
-- tabloid_blog: for stories with health, crime, celebrity, or fear angles
-- social_influencer: for lifestyle, health, food, wellness, or relatable topics
-- podcast_host: for political, conspiracy-adjacent, or "hidden truth" stories
-- news_anchor: for stories that have mainstream TV appeal
-- random_commenter: almost always appears at the end of any chain
-- government_official: for policy, health guidelines, economic, or safety stories
-- academic_commenter: for science, research, statistics, or education stories
+Available agents:
+- wire_service
+- tabloid_blog
+- social_influencer
+- podcast_host
+- news_anchor
+- random_commenter
+- government_official
+- academic_commenter
 
-Rules:
-- Think about what TYPE of story this is (health/science/political/social/crime/etc.)
-- Choose the agents that would REALISTICALLY pick it up in order
-- wire_service almost always goes first if it's a factual/research finding
-- random_commenter almost always goes last
-- Don't always use all agents — a niche academic story might skip tabloid_blog
+Instructions:
+- Select whichever agents make sense
+- Use as few or as many as needed (1–8)
+- Choose any order that realistically matches how the story would spread
+- Skip agents that do not fit
+- Do not force specific agents into the chain
+- Think about how stories actually evolve online
+- Explain why the path makes sense
 
-Return ONLY a JSON object:
+Return ONLY JSON:
+
 {
   "agents": ["agent_id", ...],
-  "reasoning": "one sentence explanation",
-  "story_type": "2-3 word label"
-}"""
+  "reasoning": "why this path was chosen",
+  "story_type": "short category label"
+}
+"""
 
 
 # ---------------------------------------------------------------------------
